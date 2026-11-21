@@ -1,0 +1,91 @@
+name: Build Rode5tune
+
+on:
+  workflow_dispatch:            # lets you press "Run workflow" in the Actions tab
+  push:
+    branches: [ main, master ]
+    tags: [ 'v*' ]
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: Windows, os: windows-latest, artifact: Rode5tune-Windows }
+          - { name: macOS,   os: macos-latest,   artifact: Rode5tune-macOS }
+          - { name: Linux,   os: ubuntu-22.04,   artifact: Rode5tune-Linux }
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config \
+            libasound2-dev libjack-jackd2-dev libfreetype6-dev libfontconfig1-dev \
+            libx11-dev libxcomposite-dev libxcursor-dev libxext-dev libxinerama-dev \
+            libxrandr-dev libxrender-dev libgl1-mesa-dev mesa-common-dev
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Configure (macOS universal)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --parallel 4
+
+      - name: Collect binaries
+        shell: bash
+        run: |
+          mkdir -p dist
+          find build -type d -name "Rode5tune.vst3"      -prune -exec cp -R {} dist/ \;
+          find build -type d -name "Rode5tune.component" -prune -exec cp -R {} dist/ \;
+          find build -type d -name "Rode5tune.app"       -prune -exec cp -R {} dist/ \;
+          find build -path "*Standalone*" -type f \( -name "Rode5tune.exe" -o -name "Rode5tune" \) -exec cp {} dist/ \;
+          cp README.md dist/README.md
+          echo "Collected:"; ls -la dist
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Zip each platform
+        run: |
+          cd artifacts
+          for d in */; do d="${d%/}"; (cd "$d" && zip -r "../$d.zip" .); done
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*.zip
+          generate_release_notes: true
